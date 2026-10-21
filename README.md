@@ -1,36 +1,56 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# 실측없이 — 인테리어 상담용 3D 골조 MVP
 
-## Getting Started
+인테리어 업체가 상담 자리에서 **평면도나 평수만으로 골조를 바로 띄우고**, 마감재 컬러 조합을 보여준 뒤,
+**스케치업으로 넘겨 디자이너가 이어서 작업**할 수 있게 하는 웹 도구입니다.
 
-First, run the development server:
+> 상담용 추정 골조입니다. 계약 후 시공 전 실측 확인은 필요합니다.
+
+## 지금 되는 것 (MVP 1단계)
+
+| 기능 | 설명 |
+|---|---|
+| 평형 템플릿 | 59㎡(3Bay), 84㎡(4Bay) 대표 평면을 클릭 한 번으로 생성 (전용면적에 맞춰 자동 보정) |
+| 평면도 이미지 | 평면도 이미지를 올리고 그 위에 벽 중심선을 따라 방을 그림 (꼭짓점·직각·정렬 스냅) |
+| 축척 | 두 점 길이 입력 또는 **전용면적(㎡) 입력만으로 축척 자동 계산** |
+| 문/창/개구부 | 벽 위에 두 점 클릭. 하단·상단 높이 조절 |
+| 마감재 | 방별 바닥/벽 마감재 선택, 5가지 컬러 조합 일괄 적용 (욕실은 자동으로 타일) |
+| 3D | 2D와 실시간 연동, 벽 낮춰 보기, 방 안 시점 |
+| 스케치업 내보내기 | `.dae + 텍스처` zip. 방마다 그룹, 마감재는 이름 붙은 재질로 들어감 |
+| 저장 | 브라우저 자동저장 + JSON 저장/불러오기, 실행취소(Ctrl+Z) |
+
+### 스케치업에서 열기
+zip 압축 해제 → SketchUp `파일 > 가져오기 > COLLADA (*.dae)` → `.dae` 선택.
+단위 mm, 원점은 도면 남서쪽 모서리입니다.
+
+## 실행
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+npm run dev   # http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## 구조
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```
+src/lib/types.ts          데이터 모델 (평면 좌표는 이미지 px, mmPerPx로 환산)
+src/lib/build.ts          프로젝트 → 3D 메쉬 (뷰어와 내보내기가 같은 데이터 사용)
+src/lib/collada.ts        메쉬 → Collada(.dae)
+src/lib/exportSketchup.ts .dae + 텍스처 + 원본 json을 zip으로
+src/lib/materials.ts      마감재 카탈로그 · 컬러 조합 프리셋 (브랜드 제휴 전 샘플)
+src/lib/textures.ts       절차적 텍스처 (실사 텍스처로 교체 예정)
+src/lib/templates.ts      평형 템플릿
+src/components/PlanEditor.tsx  2D 평면 편집기 (SVG)
+src/components/Viewer3D.tsx    3D 뷰어 (react-three-fiber)
+src/components/Studio.tsx      화면 전체 · 상태 · 실행취소
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+벽은 방마다 중심선에서 안쪽으로 반 두께씩 만들고, 이웃한 방의 벽과 등을 맞대 전체 두께가 됩니다.
+방마다 벽지를 따로 지정할 수 있고, 스케치업에서도 방 단위로 그룹이 나뉩니다.
 
-## Learn More
+## 다음 단계
 
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+1. 평면도 이미지에서 벽 자동 인식 (지금은 따라 그리기) → 반자동 보정
+2. 브랜드 실사 텍스처/품번 연동, 자재 수량 산출
+3. 레퍼런스 사진 → 골조 렌더에 스타일 입힌 초안 이미지 (AI)
+4. 부자재 사진 → 텍스처 에셋 변환
+5. 스케치업 확장 프로그램으로 네이티브 .skp 생성 (태그·컴포넌트 구조)

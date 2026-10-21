@@ -1,0 +1,424 @@
+"use client";
+
+import dynamic from "next/dynamic";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { downloadBlob, exportSketchupZip, stamp } from "@/lib/exportSketchup";
+import { MATERIALS, PRESETS, getMaterial, type Material } from "@/lib/materials";
+import { fitScaleToArea, loadSaved, roomAreaM2, save, totalAreaM2 } from "@/lib/project";
+import { TEMPLATES, emptyProject, projectFromTemplate } from "@/lib/templates";
+import { textureDataUrl } from "@/lib/textures";
+import type { Opening, OpeningKind, Project, Room, RoomType } from "@/lib/types";
+import { OPENING_DEFAULTS, OPENING_LABEL, ROOM_TYPE_LABEL } from "@/lib/types";
+import PlanEditor, { type Selection, type Tool } from "./PlanEditor";
+import type { CameraRequest } from "./Viewer3D";
+
+const Viewer3D = dynamic(() => import("./Viewer3D"), {
+  ssr: false,
+  loading: () => <div className="grid h-full place-items-center text-sm text-neutral-500">3D 준비 중…</div>,
+});
+
+const TOOLS: { id: Tool; label: string; key: string; hint: string }[] = [
+  { id: "select", label: "선택", key: "V", hint: "방/문을 클릭해 선택 · 꼭짓점 드래그로 수정 · 빈 곳 드래그로 화면 이동 · 휠로 확대" },
+  { id: "room", label: "방 그리기", key: "R", hint: "벽 중심선을 따라 꼭짓점 클릭 · 첫 점 클릭 또는 Enter로 완성 · Shift로 직각 스냅 끄기 · Backspace 한 점 취소" },
+  { id: "door", label: "문", key: "D", hint: "벽 위에서 문 시작점과 끝점을 클릭" },
+  { id: "window", label: "창", key: "W", hint: "벽 위에서 창 시작점과 끝점을 클릭" },
+  { id: "open", label: "개구부", key: "O", hint: "벽을 없앨 구간(거실-주방 등)의 시작점과 끝점을 클릭" },
+  { id: "scale", label: "축척 맞추기", key: "S", hint: "치수를 아는 두 점(예: 평면도 치수선 양끝)을 클릭하면 실제 길이를 입력합니다" },
+];
+
+type History = { past: Project[]; present: Project; future: Project[] };
+
+export default function Studio() {
+  const [hist, setHist] = useState<History>(() => ({ past: [], present: loadSaved() ?? projectFromTemplate(TEMPLATES[1]), future: [] }));
+  const project = hist.present;
+  const [tool, setTool] = useState<Tool>("select");
+  const [selection, setSelection] = useState<Selection>(null);
+  const [view, setView] = useState<"split" | "plan" | "3d">("split");
+  const [cutaway, setCutaway] = useState(false);
+  const [camera, setCamera] = useState<CameraRequest>({ mode: "overview", nonce: 0 });
+  const [exporting, setExporting] = useState(false);
+  const [areaInput, setAreaInput] = useState("");
+  const fileRef = useRef<HTMLInputElement>(null);
+  const jsonRef = useRef<HTMLInputElement>(null);
+
+  const update = useCallback((next: Project, commit = true) => {
+    setHist((h) =>
+      commit ? { past: [...h.past.slice(-80), h.present], present: next, future: [] } : { ...h, present: next },
+    );
+  }, []);
+  const patch = (p: Partial<Project>) => update({ ...project, ...p });
+  const undo = () => setHist((h) => (h.past.length ? { past: h.past.slice(0, -1), present: h.past[h.past.length - 1], future: [h.present, ...h.future] } : h));
+  const redo = () => setHist((h) => (h.future.length ? { past: [...h.past, h.present], present: h.future[0], future: h.future.slice(1) } : h));
+
+  // 자동 저장
+  useEffect(() => {
+    const t = setTimeout(() => save(project), 400);
+    return () => clearTimeout(t);
+  }, [project]);
+
+  const selectedRoom = selection?.kind === "room" ? project.rooms.find((r) => r.id === selection.id) : undefined;
+  const selectedOpening = selection?.kind === "opening" ? project.openings.find((o) => o.id === selection.id) : undefined;
+
+  const updateRoom = (id: string, p: Partial<Room>) =>
+    update({ ...project, rooms: project.rooms.map((r) => (r.id === id ? { ...r, ...p } : r)) });
+  const updateOpening = (id: string, p: Partial<Opening>) =>
+    update({ ...project, openings: project.openings.map((o) => (o.id === id ? { ...o, ...p } : o)) });
+  const deleteSelection = () => {
+    if (!selection) return;
+    if (selection.kind === "room") update({ ...project, rooms: project.rooms.filter((r) => r.id !== selection.id) });
+    else update({ ...project, openings: project.openings.filter((o) => o.id !== selection.id) });
+    setSelection(null);
+  };
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.target as HTMLElement).closest("input,textarea,select")) return;
+      const mod = e.ctrlKey || e.metaKey;
+      if (mod && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        if (e.shiftKey) redo();
+        else undo();
+        return;
+      }
+      if (mod && e.key.toLowerCase() === "y") {
+        e.preventDefault();
+        redo();
+        return;
+      }
+      if (mod) return;
+      if (e.key === "Delete") deleteSelection();
+      const t = TOOLS.find((x) => x.key.toLowerCase() === e.key.toLowerCase());
+      if (t) setTool(t.id);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
+  const startFrom = (p: Project) => {
+    update(p);
+    setSelection(null);
+    setTool(p.rooms.length ? "select" : "room");
+    setCamera((c) => ({ mode: "overview", nonce: c.nonce + 1 }));
+  };
+
+  const onImage = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result as string;
+      const img = new Image();
+      img.onload = () => {
+        // 축척 초기값: 이미지 가로를 대략 15m로 가정 (이후 축척 맞추기로 보정)
+        const base = emptyProject();
+        startFrom({
+          ...base,
+          name: file.name.replace(/\.[^.]+$/, ""),
+          image: { dataUrl, width: img.naturalWidth, height: img.naturalHeight },
+          mmPerPx: 15000 / img.naturalWidth,
+        });
+      };
+      img.src = dataUrl;
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const onScaleMeasured = (px: number) => {
+    const v = window.prompt("두 점 사이의 실제 길이를 mm로 입력하세요 (예: 3600)");
+    const mm = Number(v);
+    if (!v || !Number.isFinite(mm) || mm <= 0 || px <= 0) return;
+    patch({ mmPerPx: mm / px });
+  };
+
+  const applyPreset = (presetId: string) => {
+    const preset = PRESETS.find((p) => p.id === presetId)!;
+    update({
+      ...project,
+      rooms: project.rooms.map((r) => ({ ...r, floorMat: preset.byType[r.type].floor, wallMat: preset.byType[r.type].wall })),
+    });
+  };
+
+  const doExport = async () => {
+    setExporting(true);
+    try {
+      const { blob, filename } = await exportSketchupZip(project);
+      downloadBlob(blob, filename);
+    } catch (e) {
+      alert(`내보내기 실패: ${(e as Error).message}`);
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const onLoadJson = async (file: File) => {
+    try {
+      const p = JSON.parse(await file.text()) as Project;
+      if (p.version !== 1 || !Array.isArray(p.rooms)) throw new Error("형식이 맞지 않습니다");
+      startFrom(p);
+    } catch (e) {
+      alert(`불러오기 실패: ${(e as Error).message}`);
+    }
+  };
+
+  const hint = TOOLS.find((t) => t.id === tool)!.hint;
+
+  return (
+    <div className="flex h-dvh flex-col bg-white text-neutral-900">
+      {/* 상단 바 */}
+      <header className="flex flex-wrap items-center gap-2 border-b border-neutral-200 px-3 py-2">
+        <span className="mr-1 font-bold">실측없이</span>
+        <input
+          className="w-48 rounded border border-neutral-300 px-2 py-1 text-sm"
+          value={project.name}
+          onChange={(e) => update({ ...project, name: e.target.value }, false)}
+          aria-label="프로젝트 이름"
+        />
+        <div className="mx-2 h-5 w-px bg-neutral-200" />
+        {TEMPLATES.map((t) => (
+          <button key={t.id} className="btn" title={t.description} onClick={() => startFrom(projectFromTemplate(t))}>
+            {t.name}
+          </button>
+        ))}
+        <button className="btn" onClick={() => fileRef.current?.click()}>
+          평면도 이미지 올리기
+        </button>
+        <button className="btn" onClick={() => startFrom(emptyProject())}>
+          빈 도면
+        </button>
+        <input ref={fileRef} type="file" accept="image/*" hidden onChange={(e) => e.target.files?.[0] && onImage(e.target.files[0])} />
+        <div className="ml-auto flex items-center gap-2">
+          <button className="btn" onClick={undo} disabled={!hist.past.length} title="Ctrl+Z">
+            ↶
+          </button>
+          <button className="btn" onClick={redo} disabled={!hist.future.length} title="Ctrl+Shift+Z">
+            ↷
+          </button>
+          <button
+            className="btn"
+            onClick={() =>
+              downloadBlob(new Blob([JSON.stringify(project)], { type: "application/json" }), `project_${stamp()}.json`)
+            }
+          >
+            저장
+          </button>
+          <button className="btn" onClick={() => jsonRef.current?.click()}>
+            불러오기
+          </button>
+          <input ref={jsonRef} type="file" accept="application/json,.json" hidden onChange={(e) => e.target.files?.[0] && onLoadJson(e.target.files[0])} />
+          <button className="btn-primary" onClick={doExport} disabled={exporting || !project.rooms.length}>
+            {exporting ? "만드는 중…" : "스케치업으로 내보내기"}
+          </button>
+        </div>
+      </header>
+
+      <div className="flex min-h-0 flex-1">
+        {/* 사이드 패널 */}
+        <aside className="w-72 shrink-0 space-y-5 overflow-y-auto border-r border-neutral-200 p-3 text-sm">
+          <section>
+            <h3 className="panel-title">컬러 조합</h3>
+            <div className="grid grid-cols-1 gap-1.5">
+              {PRESETS.map((p) => (
+                <button key={p.id} className="flex items-center gap-2 rounded border border-neutral-200 p-1.5 text-left hover:border-neutral-400" onClick={() => applyPreset(p.id)}>
+                  <span className="flex shrink-0 overflow-hidden rounded">
+                    <Swatch m={getMaterial(p.byType.living.floor)} size={22} />
+                    <Swatch m={getMaterial(p.byType.living.wall)} size={22} />
+                    <Swatch m={getMaterial(p.byType.bath.wall)} size={22} />
+                  </span>
+                  <span>
+                    <span className="block font-medium">{p.name}</span>
+                    <span className="block text-xs text-neutral-500">{p.description}</span>
+                  </span>
+                </button>
+              ))}
+            </div>
+          </section>
+
+          {selectedRoom && (
+            <section className="space-y-2 rounded-lg bg-blue-50 p-2">
+              <h3 className="panel-title">선택한 방</h3>
+              <div className="flex gap-1.5">
+                <input className="input min-w-0 flex-1" value={selectedRoom.name} onChange={(e) => updateRoom(selectedRoom.id, { name: e.target.value })} />
+                <select className="input" value={selectedRoom.type} onChange={(e) => updateRoom(selectedRoom.id, { type: e.target.value as RoomType })}>
+                  {Object.entries(ROOM_TYPE_LABEL).map(([k, v]) => (
+                    <option key={k} value={k}>
+                      {v}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <p className="text-xs text-neutral-600">안목 면적 약 {roomAreaM2(selectedRoom, project).toFixed(2)}㎡</p>
+              <MaterialPicker label="바닥" category="floor" value={selectedRoom.floorMat} onPick={(id) => updateRoom(selectedRoom.id, { floorMat: id })} />
+              <MaterialPicker label="벽" category="wall" value={selectedRoom.wallMat} onPick={(id) => updateRoom(selectedRoom.id, { wallMat: id })} />
+              <div className="flex gap-1.5">
+                <button className="btn flex-1" onClick={() => { setView((v) => (v === "plan" ? "split" : v)); setCamera((c) => ({ mode: "room", roomId: selectedRoom.id, nonce: c.nonce + 1 })); }}>
+                  방 안에서 보기
+                </button>
+                <button className="btn text-red-600" onClick={deleteSelection}>
+                  삭제
+                </button>
+              </div>
+            </section>
+          )}
+
+          {selectedOpening && (
+            <OpeningPanel opening={selectedOpening} project={project} onChange={(p) => updateOpening(selectedOpening.id, p)} onDelete={deleteSelection} />
+          )}
+
+          <section className="space-y-2">
+            <h3 className="panel-title">축척 · 골조</h3>
+            <p className="text-xs text-neutral-600">
+              현재 전용면적(발코니 제외, 안목) 약 <b>{totalAreaM2(project).toFixed(1)}㎡</b> (전용 {(totalAreaM2(project) / 3.3058).toFixed(1)}평)
+            </p>
+            <div className="flex gap-1.5">
+              <input className="input w-full" placeholder="전용면적 ㎡ (예: 84.97)" value={areaInput} onChange={(e) => setAreaInput(e.target.value)} />
+              <button
+                className="btn shrink-0"
+                onClick={() => {
+                  const v = Number(areaInput);
+                  if (v > 0) patch({ mmPerPx: fitScaleToArea(project, v) });
+                }}
+              >
+                면적에 맞춤
+              </button>
+            </div>
+            <button className="btn w-full" onClick={() => setTool("scale")}>
+              두 점 길이로 축척 맞추기
+            </button>
+            <div className="grid grid-cols-2 gap-1.5">
+              <label className="text-xs text-neutral-600">
+                천장고(mm)
+                <input className="input w-full" type="number" value={project.wallHeight} onChange={(e) => patch({ wallHeight: Math.max(1500, Number(e.target.value) || 2300) })} />
+              </label>
+              <label className="text-xs text-neutral-600">
+                벽 두께(mm)
+                <input className="input w-full" type="number" value={project.wallThickness} onChange={(e) => patch({ wallThickness: Math.max(50, Number(e.target.value) || 150) })} />
+              </label>
+            </div>
+          </section>
+
+          <section>
+            <h3 className="panel-title">방 목록</h3>
+            <ul className="space-y-0.5">
+              {project.rooms.map((r) => (
+                <li key={r.id}>
+                  <button
+                    className={`flex w-full items-center gap-2 rounded px-1.5 py-1 text-left hover:bg-neutral-100 ${r.id === selectedRoom?.id ? "bg-neutral-100 font-medium" : ""}`}
+                    onClick={() => setSelection({ kind: "room", id: r.id })}
+                  >
+                    <Swatch m={getMaterial(r.floorMat)} size={14} />
+                    <span className="flex-1">{r.name}</span>
+                    <span className="text-xs text-neutral-500">{roomAreaM2(r, project).toFixed(1)}㎡</span>
+                  </button>
+                </li>
+              ))}
+              {!project.rooms.length && <li className="text-xs text-neutral-500">‘방 그리기’로 방을 추가하세요.</li>}
+            </ul>
+          </section>
+        </aside>
+
+        {/* 작업 영역 */}
+        <main className="flex min-w-0 flex-1 flex-col">
+          <div className="flex flex-wrap items-center gap-1.5 border-b border-neutral-200 px-3 py-1.5">
+            {TOOLS.map((t) => (
+              <button key={t.id} className={tool === t.id ? "btn-primary" : "btn"} onClick={() => setTool(t.id)} title={`단축키 ${t.key}`}>
+                {t.label}
+              </button>
+            ))}
+            <div className="ml-auto flex items-center gap-1.5">
+              <label className="mr-2 flex items-center gap-1 text-xs">
+                <input type="checkbox" checked={cutaway} onChange={(e) => setCutaway(e.target.checked)} /> 벽 낮춰 보기
+              </label>
+              <button className="btn" onClick={() => setCamera((c) => ({ mode: "overview", nonce: c.nonce + 1 }))}>
+                전체 보기
+              </button>
+              {(["plan", "split", "3d"] as const).map((v) => (
+                <button key={v} className={view === v ? "btn-primary" : "btn"} onClick={() => setView(v)}>
+                  {v === "plan" ? "2D" : v === "split" ? "분할" : "3D"}
+                </button>
+              ))}
+            </div>
+          </div>
+          <p className="border-b border-neutral-100 bg-neutral-50 px-3 py-1 text-xs text-neutral-600">{hint}</p>
+          <div className="flex min-h-0 flex-1">
+            {view !== "3d" && (
+              <div className={`min-w-0 ${view === "split" ? "w-1/2 border-r border-neutral-200" : "flex-1"}`}>
+                <PlanEditor
+                  project={project}
+                  tool={tool}
+                  selection={selection}
+                  onSelect={setSelection}
+                  onChange={update}
+                  onToolDone={() => setTool("select")}
+                  onScaleMeasured={onScaleMeasured}
+                />
+              </div>
+            )}
+            {view !== "plan" && (
+              <div className="min-w-0 flex-1">
+                <Viewer3D project={project} cutaway={cutaway} camera={camera} onSelectRoom={(id) => setSelection({ kind: "room", id })} />
+              </div>
+            )}
+          </div>
+        </main>
+      </div>
+    </div>
+  );
+}
+
+function Swatch({ m, size }: { m: Material; size: number }) {
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img src={textureDataUrl(m)} alt="" width={size} height={size} className="block" style={{ width: size, height: size }} />
+  );
+}
+
+function MaterialPicker({ label, category, value, onPick }: { label: string; category: "floor" | "wall"; value: string; onPick: (id: string) => void }) {
+  const list = MATERIALS.filter((m) => m.category === category);
+  return (
+    <div>
+      <p className="mb-1 text-xs text-neutral-600">
+        {label}: <b className="text-neutral-900">{getMaterial(value).name}</b>
+      </p>
+      <div className="grid grid-cols-8 gap-1">
+        {list.map((m) => (
+          <button key={m.id} title={m.name} onClick={() => onPick(m.id)} className={`overflow-hidden rounded ring-offset-1 ${m.id === value ? "ring-2 ring-blue-600" : "ring-1 ring-neutral-300"}`}>
+            <Swatch m={m} size={26} />
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function OpeningPanel({ opening, project, onChange, onDelete }: { opening: Opening; project: Project; onChange: (p: Partial<Opening>) => void; onDelete: () => void }) {
+  const width = Math.round(Math.hypot(opening.b.x - opening.a.x, opening.b.y - opening.a.y) * project.mmPerPx);
+  return (
+    <section className="space-y-2 rounded-lg bg-amber-50 p-2">
+      <h3 className="panel-title">선택한 개구부</h3>
+      <select className="input w-full" value={opening.kind} onChange={(e) => {
+        const kind = e.target.value as OpeningKind;
+        onChange({ kind, ...OPENING_DEFAULTS[kind] });
+      }}>
+        {Object.entries(OPENING_LABEL).map(([k, v]) => (
+          <option key={k} value={k}>
+            {v}
+          </option>
+        ))}
+      </select>
+      <p className="text-xs text-neutral-600">폭 약 {width}mm (끝점을 드래그해서 조절)</p>
+      {opening.kind !== "open" && (
+        <div className="grid grid-cols-2 gap-1.5">
+          <label className="text-xs text-neutral-600">
+            하단 높이(mm)
+            <input className="input w-full" type="number" value={opening.sill} onChange={(e) => onChange({ sill: Math.max(0, Number(e.target.value) || 0) })} />
+          </label>
+          <label className="text-xs text-neutral-600">
+            상단 높이(mm)
+            <input className="input w-full" type="number" value={opening.head} onChange={(e) => onChange({ head: Math.max(0, Number(e.target.value) || 0) })} />
+          </label>
+        </div>
+      )}
+      <button className="btn w-full text-red-600" onClick={onDelete}>
+        삭제
+      </button>
+    </section>
+  );
+}
