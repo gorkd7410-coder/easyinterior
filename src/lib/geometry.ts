@@ -102,8 +102,8 @@ export function insetPolygon(pts: Pt[], w: number): { inset: Pt[]; normals: Pt[]
     let q = { x: p1.x + d1.x * t, y: p1.y + d1.y * t };
     // 아주 뾰족한 모서리에서 마이터가 튀지 않도록 제한
     const miter = dist(q, p);
-    if (miter > w * 4) {
-      const s = (w * 4) / miter;
+    if (miter > Math.abs(w) * 4) {
+      const s = (Math.abs(w) * 4) / miter;
       q = { x: p.x + (q.x - p.x) * s, y: p.y + (q.y - p.y) * s };
     }
     inset.push(q);

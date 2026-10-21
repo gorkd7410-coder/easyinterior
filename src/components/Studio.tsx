@@ -2,12 +2,14 @@
 
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { detectFromDataUrl } from "@/lib/detectImage";
 import { downloadBlob, exportSketchupZip, stamp } from "@/lib/exportSketchup";
-import { MATERIALS, PRESETS, getMaterial, type Material } from "@/lib/materials";
+import { pointInPolygon, polygonArea, uid } from "@/lib/geometry";
+import { MATERIALS, PRESETS, finishFor, getMaterial, type Material } from "@/lib/materials";
 import { fitScaleToArea, loadSaved, roomAreaM2, save, totalAreaM2 } from "@/lib/project";
 import { TEMPLATES, emptyProject, projectFromTemplate } from "@/lib/templates";
 import { textureDataUrl } from "@/lib/textures";
-import type { Opening, OpeningKind, Project, Room, RoomType } from "@/lib/types";
+import type { Opening, OpeningKind, Project, Pt, Room, RoomType } from "@/lib/types";
 import { OPENING_DEFAULTS, OPENING_LABEL, ROOM_TYPE_LABEL } from "@/lib/types";
 import PlanEditor, { type Selection, type Tool } from "./PlanEditor";
 import type { CameraRequest } from "./Viewer3D";
@@ -23,6 +25,7 @@ const TOOLS: { id: Tool; label: string; key: string; hint: string }[] = [
   { id: "door", label: "문", key: "D", hint: "벽 위에서 문 시작점과 끝점을 클릭" },
   { id: "window", label: "창", key: "W", hint: "벽 위에서 창 시작점과 끝점을 클릭" },
   { id: "open", label: "개구부", key: "O", hint: "벽을 없앨 구간(거실-주방 등)의 시작점과 끝점을 클릭" },
+  { id: "pick", label: "방 클릭 인식", key: "A", hint: "평면도 이미지에서 방 안쪽을 클릭하면 벽을 따라 방 모양을 자동으로 잡습니다 (평면도 이미지가 있을 때)" },
   { id: "scale", label: "축척 맞추기", key: "S", hint: "치수를 아는 두 점(예: 평면도 치수선 양끝)을 클릭하면 실제 길이를 입력합니다" },
 ];
 
@@ -38,6 +41,9 @@ export default function Studio() {
   const [camera, setCamera] = useState<CameraRequest>({ mode: "overview", nonce: 0 });
   const [exporting, setExporting] = useState(false);
   const [areaInput, setAreaInput] = useState("");
+  const [gapStrength, setGapStrength] = useState(1);
+  const [detecting, setDetecting] = useState(false);
+  const [detectMsg, setDetectMsg] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
   const jsonRef = useRef<HTMLInputElement>(null);
 
@@ -119,6 +125,78 @@ export default function Studio() {
       img.src = dataUrl;
     };
     reader.readAsDataURL(file);
+  };
+
+  /** 이미지를 처음 올린 뒤 축척을 아직 안 맞췄으면 인식한 벽 두께로 축척을 추정 */
+  const scaleUntouched = (p: Project) => !!p.image && Math.abs(p.mmPerPx - 15000 / p.image.width) < 1e-9;
+
+  const makeRoom = (points: Pt[], name: string, type: RoomType): Room => {
+    const f = finishFor(type);
+    return { id: uid(), name, type, points, floorMat: f.floor, wallMat: f.wall };
+  };
+
+  const detectAll = async () => {
+    if (!project.image) return;
+    if (project.rooms.length && !window.confirm("그려둔 방을 지우고 자동 인식 결과로 바꿀까요?")) return;
+    setDetecting(true);
+    setDetectMsg("");
+    try {
+      const res = await detectFromDataUrl(project.image.dataUrl, gapStrength);
+      const mmPerPx = scaleUntouched(project) ? res.mmPerPxGuess : project.mmPerPx;
+      // 넓은 순으로 이름 붙이기 (가장 넓은 곳 = 거실)
+      const sorted = [...res.rooms].sort((a, b) => polygonArea(b) - polygonArea(a));
+      let n = 0;
+      let m = 0;
+      const rooms = sorted.map((pts, i) => {
+        const m2 = (polygonArea(pts) * mmPerPx * mmPerPx) / 1e6;
+        if (i === 0) return makeRoom(pts, "거실", "living");
+        if (m2 >= 6.5) return makeRoom(pts, `방${++n}`, "bedroom");
+        return makeRoom(pts, `공간${++m}`, "etc");
+      });
+      update({ ...project, rooms, openings: [], mmPerPx });
+      setSelection(null);
+      setTool("select");
+      setCamera((c) => ({ mode: "overview", nonce: c.nonce + 1 }));
+      setDetectMsg(
+        rooms.length
+          ? `방 ${rooms.length}개를 찾았습니다. 이름·용도를 고치고, 전용면적을 입력해 축척을 맞춰주세요. 문·창은 직접 추가합니다.`
+          : "방을 찾지 못했습니다. '문틈 막기'를 올려보거나 '방 클릭 인식'을 써보세요.",
+      );
+    } catch (e) {
+      setDetectMsg(`인식 실패: ${(e as Error).message}`);
+    } finally {
+      setDetecting(false);
+    }
+  };
+
+  const onPick = async (p: Pt) => {
+    if (!project.image) {
+      setDetectMsg("평면도 이미지를 먼저 올려주세요.");
+      return;
+    }
+    if (project.rooms.some((r) => pointInPolygon(p, r.points))) {
+      setDetectMsg("이미 방이 있는 자리입니다.");
+      return;
+    }
+    setDetecting(true);
+    try {
+      const res = await detectFromDataUrl(project.image.dataUrl, gapStrength);
+      const idx = res.roomAt(p);
+      if (idx < 0) {
+        setDetectMsg("이 자리에서는 방 모양을 찾지 못했습니다. '문틈 막기'를 바꿔보거나 직접 그려주세요.");
+        return;
+      }
+      const pts = res.rooms[idx];
+      const mmPerPx = scaleUntouched(project) ? res.mmPerPxGuess : project.mmPerPx;
+      const room = makeRoom(pts, `방${project.rooms.length + 1}`, "bedroom");
+      update({ ...project, rooms: [...project.rooms, room], mmPerPx });
+      setSelection({ kind: "room", id: room.id });
+      setDetectMsg(`'${room.name}'을(를) 추가했습니다. 다른 방도 계속 클릭해서 추가할 수 있습니다.`);
+    } catch (e) {
+      setDetectMsg(`인식 실패: ${(e as Error).message}`);
+    } finally {
+      setDetecting(false);
+    }
   };
 
   const onScaleMeasured = (px: number) => {
@@ -212,6 +290,22 @@ export default function Studio() {
       <div className="flex min-h-0 flex-1">
         {/* 사이드 패널 */}
         <aside className="w-72 shrink-0 space-y-5 overflow-y-auto border-r border-neutral-200 p-3 text-sm">
+          {project.image && (
+            <section className="space-y-2 rounded-lg bg-emerald-50 p-2">
+              <h3 className="panel-title">평면도 자동 인식</h3>
+              <button className="btn-primary w-full" onClick={detectAll} disabled={detecting}>
+                {detecting ? "인식 중…" : "벽 자동 인식 (전체)"}
+              </button>
+              <button className={tool === "pick" ? "btn-primary w-full" : "btn w-full"} onClick={() => setTool("pick")} disabled={detecting}>
+                방 클릭 인식 (한 칸씩)
+              </button>
+              <label className="block text-xs text-neutral-600">
+                문틈 막기 {gapStrength.toFixed(1)} — 방이 합쳐지면 올리고, 작은 방이 사라지면 내리세요
+                <input className="w-full" type="range" min={0.4} max={2} step={0.1} value={gapStrength} onChange={(e) => setGapStrength(Number(e.target.value))} />
+              </label>
+              {detectMsg && <p className="text-xs text-emerald-900">{detectMsg}</p>}
+            </section>
+          )}
           <section>
             <h3 className="panel-title">컬러 조합</h3>
             <div className="grid grid-cols-1 gap-1.5">
@@ -348,6 +442,7 @@ export default function Studio() {
                   onChange={update}
                   onToolDone={() => setTool("select")}
                   onScaleMeasured={onScaleMeasured}
+                  onPick={onPick}
                 />
               </div>
             )}

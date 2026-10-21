@@ -7,7 +7,7 @@ import { roomAreaM2 } from "@/lib/project";
 import type { Opening, OpeningKind, Project, Pt } from "@/lib/types";
 import { OPENING_DEFAULTS } from "@/lib/types";
 
-export type Tool = "select" | "room" | "door" | "window" | "open" | "scale";
+export type Tool = "select" | "room" | "door" | "window" | "open" | "scale" | "pick";
 export type Selection = { kind: "room" | "opening"; id: string } | null;
 
 type Props = {
@@ -19,6 +19,8 @@ type Props = {
   onChange: (p: Project, commit: boolean) => void;
   onToolDone: () => void;
   onScaleMeasured: (pxLength: number) => void;
+  /** '방 클릭 인식' 도구로 평면도 위를 클릭했을 때 */
+  onPick: (p: Pt) => void;
 };
 
 type ViewBox = { x: number; y: number; w: number; h: number };
@@ -26,7 +28,7 @@ type EdgeHit = { a: Pt; b: Pt; pt: Pt; d: number };
 
 const OPENING_COLOR: Record<OpeningKind, string> = { door: "#b45309", window: "#0284c7", open: "#16a34a" };
 
-export default function PlanEditor({ project, tool, selection, onSelect, onChange, onToolDone, onScaleMeasured }: Props) {
+export default function PlanEditor({ project, tool, selection, onSelect, onChange, onToolDone, onScaleMeasured, onPick }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
   const bounds = project.image ?? project.canvas;
   const [vb, setVb] = useState<ViewBox>({ x: 0, y: 0, w: bounds.width, h: bounds.height });
@@ -222,6 +224,10 @@ export default function PlanEditor({ project, tool, selection, onSelect, onChang
       onChange({ ...project, openings: [...project.openings, o] }, true);
       onSelect({ kind: "opening", id: o.id });
       setDraft([]);
+      return;
+    }
+    if (tool === "pick") {
+      onPick(p);
       return;
     }
     if (tool === "scale") {
