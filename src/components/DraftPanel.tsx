@@ -130,7 +130,9 @@ export default function DraftPanel({ capture, onClose }: Props) {
 
         {status && !status.enabled && (
           <p className="mb-3 rounded bg-amber-50 p-2 text-sm text-amber-900">
-            아직 AI 키가 설정되지 않았습니다. 배포 설정(Vercel 환경변수)에 <code>GEMINI_API_KEY</code>를 넣으면 사용할 수 있습니다.
+            {location.protocol === "file:"
+              ? "내 컴퓨터용 파일에서는 AI 초안을 쓸 수 없습니다. AI 서버와 연결되는 인터넷 버전(Vercel)에서 사용해주세요."
+              : "아직 AI 키가 설정되지 않았습니다. 배포 설정(Vercel 환경변수)에 GEMINI_API_KEY를 넣으면 사용할 수 있습니다."}
           </p>
         )}
 
