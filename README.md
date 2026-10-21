@@ -17,6 +17,7 @@
 | 마감재 | 방별 바닥/벽 마감재 선택, 5가지 컬러 조합 일괄 적용 (욕실은 자동으로 타일) |
 | 3D | 2D와 실시간 연동, 벽 낮춰 보기, 방 안 시점 |
 | 스케치업 내보내기 | `.dae + 텍스처` zip. 방마다 그룹, 마감재는 이름 붙은 재질로 들어감 |
+| AI 초안 | 3D 화면(구조) + 고객 레퍼런스 사진(스타일) → 사진풍 초안 이미지 (Gemini 이미지 모델) |
 | 저장 | 브라우저 자동저장 + JSON 저장/불러오기, 실행취소(Ctrl+Z) |
 
 ### 스케치업에서 열기
@@ -29,6 +30,16 @@ zip 압축 해제 → SketchUp `파일 > 가져오기 > COLLADA (*.dae)` → `.d
 npm install
 npm run dev   # http://localhost:3000
 ```
+
+## 환경변수 (AI 초안용, 서버에만 저장)
+
+| 이름 | 필수 | 설명 |
+|---|---|---|
+| `GEMINI_API_KEY` | 예 | Google AI Studio에서 발급한 API 키 |
+| `DRAFT_ACCESS_CODE` | 권장 | 설정하면 이 코드를 아는 사람만 AI 초안을 쓸 수 있음 (유료 API 남용 방지) |
+| `GEMINI_IMAGE_MODEL` | 아니오 | 기본 `gemini-2.5-flash-image` |
+
+키가 없어도 AI 초안을 뺀 나머지 기능은 모두 동작합니다.
 
 ## 구조
 
@@ -44,6 +55,8 @@ src/lib/detect.ts         평면도 이미지 → 방 다각형 (브라우저 �
 src/components/PlanEditor.tsx  2D 평면 편집기 (SVG)
 src/components/Viewer3D.tsx    3D 뷰어 (react-three-fiber)
 src/components/Studio.tsx      화면 전체 · 상태 · 실행취소
+src/components/DraftPanel.tsx  AI 초안 화면
+src/app/api/draft/route.ts     AI 초안 서버 (Gemini 호출, 키는 서버에만)
 ```
 
 벽은 방마다 중심선에서 안쪽으로 반 두께씩 만들고, 이웃한 방의 벽과 등을 맞대 전체 두께가 됩니다.
@@ -53,6 +66,6 @@ src/components/Studio.tsx      화면 전체 · 상태 · 실행취소
 
 1. 문·창 위치 자동 인식, 방 이름(글자) 읽어서 용도 자동 지정
 2. 브랜드 실사 텍스처/품번 연동, 자재 수량 산출
-3. 레퍼런스 사진 → 골조 렌더에 스타일 입힌 초안 이미지 (AI)
+3. 레퍼런스 사진에서 마감재를 골라 3D 골조에 바로 적용 (편집 가능한 초안)
 4. 부자재 사진 → 텍스처 에셋 변환
 5. 스케치업 확장 프로그램으로 네이티브 .skp 생성 (태그·컴포넌트 구조)

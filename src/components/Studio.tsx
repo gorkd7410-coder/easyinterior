@@ -11,6 +11,7 @@ import { TEMPLATES, emptyProject, projectFromTemplate } from "@/lib/templates";
 import { textureDataUrl } from "@/lib/textures";
 import type { Opening, OpeningKind, Project, Pt, Room, RoomType } from "@/lib/types";
 import { OPENING_DEFAULTS, OPENING_LABEL, ROOM_TYPE_LABEL } from "@/lib/types";
+import DraftPanel from "./DraftPanel";
 import PlanEditor, { type Selection, type Tool } from "./PlanEditor";
 import type { CameraRequest } from "./Viewer3D";
 
@@ -44,6 +45,8 @@ export default function Studio() {
   const [gapStrength, setGapStrength] = useState(1);
   const [detecting, setDetecting] = useState(false);
   const [detectMsg, setDetectMsg] = useState("");
+  const [draftOpen, setDraftOpen] = useState(false);
+  const captureRef = useRef<(() => string) | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const jsonRef = useRef<HTMLInputElement>(null);
 
@@ -281,6 +284,16 @@ export default function Studio() {
             불러오기
           </button>
           <input ref={jsonRef} type="file" accept="application/json,.json" hidden onChange={(e) => e.target.files?.[0] && onLoadJson(e.target.files[0])} />
+          <button
+            className="btn"
+            onClick={() => {
+              if (view === "plan") setView("split");
+              setDraftOpen(true);
+            }}
+            disabled={!project.rooms.length}
+          >
+            AI 초안
+          </button>
           <button className="btn-primary" onClick={doExport} disabled={exporting || !project.rooms.length}>
             {exporting ? "만드는 중…" : "스케치업으로 내보내기"}
           </button>
@@ -448,12 +461,13 @@ export default function Studio() {
             )}
             {view !== "plan" && (
               <div className="min-w-0 flex-1">
-                <Viewer3D project={project} cutaway={cutaway} camera={camera} onSelectRoom={(id) => setSelection({ kind: "room", id })} />
+                <Viewer3D project={project} cutaway={cutaway} camera={camera} onSelectRoom={(id) => setSelection({ kind: "room", id })} captureRef={captureRef} />
               </div>
             )}
           </div>
         </main>
       </div>
+      {draftOpen && <DraftPanel capture={() => captureRef.current?.() ?? null} onClose={() => setDraftOpen(false)} />}
     </div>
   );
 }

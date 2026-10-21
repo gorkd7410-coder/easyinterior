@@ -18,7 +18,26 @@ type Props = {
   cutaway: boolean;
   camera: CameraRequest;
   onSelectRoom: (id: string) => void;
+  /** 현재 3D 화면을 JPEG dataURL로 찍는 함수를 넘겨받을 자리 (AI 초안용) */
+  captureRef?: RefObject<(() => string) | null>;
 };
+
+/** 요청할 때 한 번 다시 그린 뒤 캔버스를 읽는다 (preserveDrawingBuffer 없이도 동작) */
+function Capture({ captureRef }: { captureRef: RefObject<(() => string) | null> }) {
+  const gl = useThree((s) => s.gl);
+  const scene = useThree((s) => s.scene);
+  const camera = useThree((s) => s.camera);
+  useEffect(() => {
+    captureRef.current = () => {
+      gl.render(scene, camera);
+      return gl.domElement.toDataURL("image/jpeg", 0.9);
+    };
+    return () => {
+      captureRef.current = null;
+    };
+  }, [gl, scene, camera, captureRef]);
+  return null;
+}
 
 const materialCache = new Map<string, THREE.MeshStandardMaterial>();
 function threeMaterial(id: string) {
@@ -101,7 +120,7 @@ function CameraRig({ project, request, controlsRef }: { project: Project; reques
   return null;
 }
 
-export default function Viewer3D({ project, cutaway, camera, onSelectRoom }: Props) {
+export default function Viewer3D({ project, cutaway, camera, onSelectRoom, captureRef }: Props) {
   const view = useMemo(() => (cutaway ? { ...project, wallHeight: 1100 } : project), [project, cutaway]);
   const meshes = useMemo(() => buildProject(view), [view]);
   const geometries = useMemo(
@@ -125,6 +144,7 @@ export default function Viewer3D({ project, cutaway, camera, onSelectRoom }: Pro
       <directionalLight position={[-6, 8, -4]} intensity={0.4} />
       <OrbitControls ref={controlsRef} makeDefault enableDamping dampingFactor={0.12} maxPolarAngle={Math.PI * 0.495} />
       <CameraRig project={project} request={camera} controlsRef={controlsRef} />
+      {captureRef && <Capture captureRef={captureRef} />}
       {geometries.map((r) => (
         <group
           key={r.roomId}
