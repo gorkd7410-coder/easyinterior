@@ -45,7 +45,9 @@ function threeMaterial(id: string) {
   if (hit) return hit;
   const m = getMaterial(id);
   let mat: THREE.MeshStandardMaterial;
-  if (m.category === "core") {
+  if (id === "glass") {
+    mat = new THREE.MeshStandardMaterial({ color: m.color, roughness: m.roughness, transparent: true, opacity: 0.3, depthWrite: false });
+  } else if (m.category === "core") {
     mat = new THREE.MeshStandardMaterial({ color: m.color, roughness: m.roughness });
   } else {
     const tex = new THREE.CanvasTexture(textureCanvas(m));
@@ -151,7 +153,7 @@ export default function Viewer3D({ project, cutaway, camera, onSelectRoom, captu
           onClick={(e) => {
             e.stopPropagation();
             // 평면도에서 딴 벽·슬래브는 방이 아니므로 선택하지 않는다
-            if (!r.roomId.startsWith("traced-")) onSelectRoom(r.roomId);
+            if (!r.roomId.startsWith("traced-") && !r.roomId.startsWith("fit-")) onSelectRoom(r.roomId);
           }}
         >
           {r.parts.map((p) => (

@@ -1,6 +1,7 @@
 import { uid } from "./geometry";
 import { finishFor } from "./materials";
 import { fitScaleToArea } from "./project";
+import { FIT_DEFAULTS, autoFixtures } from "./fixtures";
 import type { Opening, OpeningKind, Project, Room, RoomType } from "./types";
 import { OPENING_DEFAULTS } from "./types";
 
@@ -104,17 +105,21 @@ export function projectFromTemplate(t: Template): Project {
       wallMat: f.wall,
     };
   });
-  const openings: Opening[] = t.openings.map(([kind, ax, ay, bx, by, sill, head]) => ({
+  // 첫 번째 문이 현관문 (템플릿 정의 순서)
+  const firstDoor = t.openings.findIndex(([kind]) => kind === "door");
+  const openings: Opening[] = t.openings.map(([kind, ax, ay, bx, by, sill, head], i) => ({
     id: uid(),
     kind,
     a: { x: toPx(ax), y: toPx(ay) },
     b: { x: toPx(bx), y: toPx(by) },
     sill: sill ?? OPENING_DEFAULTS[kind].sill,
     head: head ?? OPENING_DEFAULTS[kind].head,
+    fit: kind === "window" ? { ...FIT_DEFAULTS.sash } : kind === "door" ? { ...FIT_DEFAULTS[i === firstDoor ? "entry" : "door"] } : undefined,
   }));
   const project = { ...emptyProject(), name: t.name, rooms, openings };
   // 중심선 치수로 잡은 템플릿을 안목 전용면적에 맞게 살짝 늘린다
-  return { ...project, mmPerPx: fitScaleToArea(project, t.areaM2) };
+  const scaled = { ...project, mmPerPx: fitScaleToArea(project, t.areaM2) };
+  return { ...scaled, items: autoFixtures(scaled) };
 }
 
 export function emptyProject(): Project {

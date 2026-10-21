@@ -4,11 +4,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { centroid, dist, orthoSnap, pointInPolygon, polygonArea, projectToSegment, uid } from "@/lib/geometry";
 import { getMaterial, finishFor } from "@/lib/materials";
 import { roomAreaM2 } from "@/lib/project";
+import { ITEM_SPECS, itemCorners } from "@/lib/fixtures";
 import type { InfillKind, Opening, OpeningKind, Project, Pt } from "@/lib/types";
 import { OPENING_DEFAULTS } from "@/lib/types";
 
-export type Tool = "select" | "room" | "door" | "window" | "open" | "scale" | "pick";
-export type Selection = { kind: "room" | "opening" | "infill"; id: string } | null;
+export type Tool = "select" | "room" | "door" | "window" | "open" | "scale" | "pick" | "item";
+export type Selection = { kind: "room" | "opening" | "infill" | "item"; id: string } | null;
 
 type Props = {
   project: Project;
@@ -21,6 +22,8 @@ type Props = {
   onScaleMeasured: (pxLength: number) => void;
   /** '방 클릭 인식' 도구로 평면도 위를 클릭했을 때 */
   onPick: (p: Pt) => void;
+  /** '설비 놓기' 도구로 클릭했을 때 */
+  onPlace: (p: Pt) => void;
 };
 
 type ViewBox = { x: number; y: number; w: number; h: number };
@@ -29,7 +32,7 @@ type EdgeHit = { a: Pt; b: Pt; pt: Pt; d: number };
 const INFILL_COLOR: Record<InfillKind, string> = { door: "#c026d3", window: "#f59e0b", floorWindow: "#2563eb" };
 const OPENING_COLOR: Record<OpeningKind, string> = { door: "#b45309", window: "#0284c7", open: "#16a34a" };
 
-export default function PlanEditor({ project, tool, selection, onSelect, onChange, onToolDone, onScaleMeasured, onPick }: Props) {
+export default function PlanEditor({ project, tool, selection, onSelect, onChange, onToolDone, onScaleMeasured, onPick, onPlace }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
   const bounds = project.image ?? project.canvas;
   const [vb, setVb] = useState<ViewBox>({ x: 0, y: 0, w: bounds.width, h: bounds.height });
@@ -40,6 +43,7 @@ export default function PlanEditor({ project, tool, selection, onSelect, onChang
     | { kind: "pan"; start: Pt; vb: ViewBox }
     | { kind: "vertex"; refs: { roomId: string; idx: number }[]; base: Project; moved: boolean }
     | { kind: "openEnd"; id: string; end: "a" | "b"; base: Project; moved: boolean }
+    | { kind: "item"; id: string; base: Project; dx: number; dy: number; moved: boolean }
     | null
   >(null);
 
@@ -227,6 +231,10 @@ export default function PlanEditor({ project, tool, selection, onSelect, onChang
       setDraft([]);
       return;
     }
+    if (tool === "item") {
+      onPlace(p);
+      return;
+    }
     if (tool === "pick") {
       onPick(p);
       return;
@@ -265,6 +273,14 @@ export default function PlanEditor({ project, tool, selection, onSelect, onChang
           return;
         }
       }
+    }
+    // 설비: 클릭하면 선택, 끌면 이동
+    const it = [...(project.items ?? [])].reverse().find((x) => pointInPolygon(p, itemCorners(x, project.mmPerPx)));
+    if (it) {
+      onSelect({ kind: "item", id: it.id });
+      drag.current = { kind: "item", id: it.id, base: project, dx: p.x - it.x, dy: p.y - it.y, moved: false };
+      (e.target as Element).setPointerCapture?.(e.pointerId);
+      return;
     }
     const o = hitOpening(p);
     if (o) return onSelect({ kind: "opening", id: o.id });
@@ -306,6 +322,12 @@ export default function PlanEditor({ project, tool, selection, onSelect, onChang
       });
       // 드래그 첫 이동에서만 기록 → 드래그 한 번이 실행취소 한 번
       onChange({ ...d.base, rooms }, !d.moved);
+      d.moved = true;
+      return;
+    }
+    if (d?.kind === "item") {
+      const items = (d.base.items ?? []).map((x) => (x.id === d.id ? { ...x, x: p.x - d.dx, y: p.y - d.dy } : x));
+      onChange({ ...d.base, items }, !d.moved);
       d.moved = true;
       return;
     }
@@ -426,12 +448,42 @@ export default function PlanEditor({ project, tool, selection, onSelect, onChang
               points={f.poly.map((p) => `${p.x},${p.y}`).join(" ")}
               fill={INFILL_COLOR[f.kind]}
               fillOpacity={0.9}
-              stroke={selection?.id === f.id ? "#111" : "none"}
-              strokeWidth={2 * k}
+              stroke={selection?.id === f.id ? "#111" : f.fit ? "white" : "none"}
+              strokeDasharray={selection?.id !== f.id && f.fit ? `${3 * k} ${2 * k}` : undefined}
+              strokeWidth={(f.fit ? 1.5 : 2) * k}
             />
           ))}
         </g>
       )}
+
+      {/* 주방·욕실 설비 */}
+      {(project.items ?? []).map((it) => {
+        const cs = itemCorners(it, project.mmPerPx);
+        const sel = selection?.kind === "item" && selection.id === it.id;
+        const front = [cs[2], cs[3]];
+        return (
+          <g key={it.id} pointerEvents="none">
+            <polygon
+              points={cs.map((p) => `${p.x},${p.y}`).join(" ")}
+              fill={ITEM_SPECS[it.type].group === "주방" ? "#fde68a" : "#bae6fd"}
+              fillOpacity={0.85}
+              stroke={sel ? "#111" : "#525252"}
+              strokeWidth={(sel ? 2.5 : 1) * k}
+            />
+            <line x1={front[0].x} y1={front[0].y} x2={front[1].x} y2={front[1].y} stroke="#111" strokeWidth={2 * k} />
+            <text x={it.x} y={it.y + 4 * k} textAnchor="middle" fontSize={10 * k} fill="#171717">
+              {ITEM_SPECS[it.type].label.split(" ")[0]}
+            </text>
+          </g>
+        );
+      })}
+
+      {/* 문짝·샷시가 달린 자리 표시 */}
+      {project.openings
+        .filter((o) => o.fit)
+        .map((o) => (
+          <line key={`fit-${o.id}`} x1={o.a.x} y1={o.a.y} x2={o.b.x} y2={o.b.y} stroke="white" strokeWidth={1.5 * k} strokeDasharray={`${3 * k} ${2 * k}`} pointerEvents="none" />
+        ))}
 
       {project.openings.map((o) => (
         <line

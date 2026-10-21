@@ -3,6 +3,7 @@ import { dist, insetPolygon, signedArea } from "./geometry";
 import { getMaterial } from "./materials";
 import type { Opening, Project, Pt, Room } from "./types";
 import { INFILL_HEIGHTS } from "./types";
+import { buildFixtures } from "./fixtures";
 
 // 프로젝트 → 3D 메쉬 데이터.
 // 모델 좌표계: mm, Z-up (스케치업/Collada 기준). X = 평면 x, Y = -평면 y, Z = 높이.
@@ -23,7 +24,7 @@ export type RoomMesh = {
   parts: MeshPart[];
 };
 
-class PartBuilder {
+export class PartBuilder {
   parts = new Map<string, MeshPart>();
 
   private part(materialId: string) {
@@ -275,5 +276,5 @@ export function buildTraced(project: Project): RoomMesh[] {
 }
 
 export function buildProject(project: Project): RoomMesh[] {
-  return [...project.rooms.map((r) => buildRoomMesh(r, project)), ...buildTraced(project)];
+  return [...project.rooms.map((r) => buildRoomMesh(r, project)), ...buildTraced(project), ...buildFixtures(project)];
 }

@@ -44,13 +44,48 @@ export const MATERIALS: Material[] = [
 
   // 벽체 단면/외부 (편집 대상 아님)
   { id: "core", name: "벽체", category: "core", pattern: "plain", color: "#e9e7e2", accent: "#e9e7e2", tileW: 1000, tileH: 1000, roughness: 0.9 },
+  { id: "glass", name: "유리", category: "core", pattern: "plain", color: "#cfe3ec", accent: "#cfe3ec", tileW: 1000, tileH: 1000, roughness: 0.05 },
+  { id: "steel", name: "스테인리스", category: "core", pattern: "plain", color: "#b9bdc1", accent: "#b9bdc1", tileW: 1000, tileH: 1000, roughness: 0.3 },
+  { id: "porcelain", name: "도기 (백색)", category: "core", pattern: "plain", color: "#f7f7f5", accent: "#f7f7f5", tileW: 1000, tileH: 1000, roughness: 0.15 },
+  { id: "stone", name: "인조대리석 상판", category: "core", pattern: "plain", color: "#e7e3dc", accent: "#e7e3dc", tileW: 1000, tileH: 1000, roughness: 0.3 },
+  { id: "mirror", name: "거울", category: "core", pattern: "plain", color: "#d3dde2", accent: "#d3dde2", tileW: 1000, tileH: 1000, roughness: 0.05 },
 ];
 
 export const MATERIAL_BY_ID: Record<string, Material> = Object.fromEntries(
   MATERIALS.map((m) => [m.id, m]),
 );
 
-export const getMaterial = (id: string) => MATERIAL_BY_ID[id] ?? MATERIAL_BY_ID.core;
+/** 문·창호·설비 색 (도장/필름 색) */
+export const PAINT_COLORS: { name: string; hex: string }[] = [
+  { name: "화이트", hex: "#f4f4f1" },
+  { name: "아이보리", hex: "#ece3cf" },
+  { name: "라이트그레이", hex: "#c8c8c4" },
+  { name: "다크그레이", hex: "#4a4c50" },
+  { name: "블랙", hex: "#202124" },
+  { name: "오크", hex: "#b88a5a" },
+  { name: "월넛", hex: "#6b4a33" },
+  { name: "세이지", hex: "#a3ae98" },
+  { name: "실버", hex: "#a9adb1" },
+];
+
+const paintName = (hex: string) => PAINT_COLORS.find((c) => c.hex === hex)?.name ?? hex;
+
+const dynamic = new Map<string, Material>();
+
+/** "paint:#rrggbb" 은 색만 있는 도장 재질, "glass" 는 유리 */
+export const paint = (hex: string) => `paint:${hex}`;
+
+export const getMaterial = (id: string): Material => {
+  const hit = MATERIAL_BY_ID[id] ?? dynamic.get(id);
+  if (hit) return hit;
+  if (id.startsWith("paint:#")) {
+    const hex = id.slice(6);
+    const m: Material = { id, name: `도장 ${paintName(hex)}`, category: "core", pattern: "plain", color: hex, accent: hex, tileW: 1000, tileH: 1000, roughness: 0.5 };
+    dynamic.set(id, m);
+    return m;
+  }
+  return MATERIAL_BY_ID.core;
+};
 
 type RoomFinish = { floor: string; wall: string };
 

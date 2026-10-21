@@ -54,8 +54,10 @@ export function toCollada(meshes: RoomMesh[], title: string): string {
     const m = getMaterial(id);
     out.push(`<effect id="fx-${id}"><profile_COMMON>`);
     if (isColorOnly(id)) {
+      // 유리는 반투명 (A_ONE: 불투명도 = 색의 알파 × transparency)
+      const glass = id === "glass" ? `<transparent opaque="A_ONE"><color>1 1 1 0.35</color></transparent><transparency><float>1</float></transparency>` : "";
       out.push(
-        `<technique sid="common"><lambert><diffuse><color>${hexToRgb(m.color)} 1</color></diffuse></lambert></technique>`,
+        `<technique sid="common"><lambert><diffuse><color>${hexToRgb(m.color)} 1</color></diffuse>${glass}</lambert></technique>`,
       );
     } else {
       out.push(

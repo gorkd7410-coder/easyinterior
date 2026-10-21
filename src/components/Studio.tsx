@@ -5,12 +5,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { detectFromDataUrl, traceFromDataUrl } from "@/lib/detectImage";
 import { downloadBlob, exportSketchupZip, stamp } from "@/lib/exportSketchup";
 import { pointInPolygon, polygonArea, uid } from "@/lib/geometry";
-import { MATERIALS, PRESETS, finishFor, getMaterial, type Material } from "@/lib/materials";
+import { MATERIALS, PAINT_COLORS, PRESETS, finishFor, getMaterial, type Material } from "@/lib/materials";
+import { FIT_DEFAULTS, ITEM_SPECS, autoFixtures, placeItem } from "@/lib/fixtures";
 import { fitScaleToArea, loadSaved, roomAreaM2, save, totalAreaM2 } from "@/lib/project";
 import { TEMPLATES, emptyProject, projectFromTemplate } from "@/lib/templates";
 import { textureDataUrl } from "@/lib/textures";
-import type { InfillKind, Opening, OpeningKind, Project, Pt, Room, RoomType, TracedWalls } from "@/lib/types";
-import { INFILL_LABEL, OPENING_DEFAULTS, OPENING_LABEL, ROOM_TYPE_LABEL } from "@/lib/types";
+import type { Fit, FitType, InfillKind, Item, ItemType, Opening, OpeningKind, Project, Pt, Room, RoomType, TracedWalls } from "@/lib/types";
+import { FIT_LABEL, INFILL_LABEL, OPENING_DEFAULTS, OPENING_LABEL, ROOM_TYPE_LABEL } from "@/lib/types";
 import DraftPanel from "./DraftPanel";
 import PlanEditor, { type Selection, type Tool } from "./PlanEditor";
 import type { CameraRequest } from "./Viewer3D";
@@ -46,6 +47,8 @@ export default function Studio() {
   const [detecting, setDetecting] = useState(false);
   const [detectMsg, setDetectMsg] = useState("");
   const [draftOpen, setDraftOpen] = useState(false);
+  const [placeType, setPlaceType] = useState<ItemType>("sink");
+  const [fitColors, setFitColors] = useState({ frame: "#f4f4f1", leaf: "#f4f4f1" });
   const captureRef = useRef<(() => string) | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const jsonRef = useRef<HTMLInputElement>(null);
@@ -74,10 +77,38 @@ export default function Studio() {
     update({ ...project, openings: project.openings.map((o) => (o.id === id ? { ...o, ...p } : o)) });
   const selectedInfill = selection?.kind === "infill" ? project.traced?.infills.find((f) => f.id === selection.id) : undefined;
   const updateTraced = (p: Partial<TracedWalls>) => project.traced && update({ ...project, traced: { ...project.traced, ...p } });
+  const selectedItem = selection?.kind === "item" ? project.items?.find((x) => x.id === selection.id) : undefined;
+  const updateItem = (id: string, p: Partial<Item>) =>
+    update({ ...project, items: (project.items ?? []).map((x) => (x.id === id ? { ...x, ...p } : x)) });
+  const setInfillFit = (id: string, fit: Fit | undefined) =>
+    updateTraced({ infills: project.traced!.infills.map((f) => (f.id === id ? { ...f, fit } : f)) });
+
+  /** 문 자리 전부에 문짝, 또는 창 자리 전부에 샷시 */
+  const fitAll = (what: "door" | "sash") => {
+    const fit: Fit = { ...FIT_DEFAULTS[what], ...fitColors, type: what };
+    const want = (isWindow: boolean) => (what === "sash" ? isWindow : !isWindow);
+    update({
+      ...project,
+      // 현관문으로 바꿔둔 자리는 그대로 둔다
+      openings: project.openings.map((o) => (o.kind !== "open" && want(o.kind === "window") && o.fit?.type !== "entry" ? { ...o, fit } : o)),
+      traced: project.traced
+        ? { ...project.traced, infills: project.traced.infills.map((f) => (want(f.kind !== "door") && f.fit?.type !== "entry" ? { ...f, fit } : f)) }
+        : project.traced,
+    });
+  };
+
+  const onPlace = (p: Pt) => {
+    const item = placeItem(project, placeType, p);
+    update({ ...project, items: [...(project.items ?? []), item] });
+    setSelection({ kind: "item", id: item.id });
+    setTool("select");
+  };
+
   const deleteSelection = () => {
     if (!selection) return;
     if (selection.kind === "room") update({ ...project, rooms: project.rooms.filter((r) => r.id !== selection.id) });
     else if (selection.kind === "infill") updateTraced({ infills: project.traced!.infills.filter((f) => f.id !== selection.id) });
+    else if (selection.kind === "item") update({ ...project, items: (project.items ?? []).filter((x) => x.id !== selection.id) });
     else update({ ...project, openings: project.openings.filter((o) => o.id !== selection.id) });
     setSelection(null);
   };
@@ -282,7 +313,10 @@ export default function Studio() {
     }
   };
 
-  const hint = TOOLS.find((t) => t.id === tool)!.hint;
+  const hint =
+    tool === "item"
+      ? `${ITEM_SPECS[placeType].label}: 놓을 자리를 클릭하면 가까운 벽에 등을 대고 놓입니다. 놓은 뒤 끌어서 옮기세요.`
+      : TOOLS.find((t) => t.id === tool)!.hint;
 
   return (
     <div className="flex h-dvh flex-col bg-white text-neutral-900">
@@ -373,6 +407,52 @@ export default function Studio() {
               )}
             </section>
           )}
+          <section className="space-y-2">
+            <h3 className="panel-title">주방 · 욕실 설비</h3>
+            <div className="grid grid-cols-2 gap-1.5">
+              {Object.values(ITEM_SPECS).map((s) => (
+                <button
+                  key={s.type}
+                  className={tool === "item" && placeType === s.type ? "btn-primary text-xs" : "btn text-xs"}
+                  onClick={() => {
+                    setPlaceType(s.type);
+                    setTool("item");
+                  }}
+                >
+                  {s.label.split(" ")[0]}
+                </button>
+              ))}
+            </div>
+            <button
+              className="btn w-full"
+              onClick={() => {
+                const items = autoFixtures(project);
+                if (items.length === (project.items ?? []).length) {
+                  window.alert("용도가 '주방' 또는 '욕실'인 방이 없거나 이미 설비가 있습니다. 방을 선택해 용도를 바꿔주세요.");
+                  return;
+                }
+                update({ ...project, items });
+              }}
+            >
+              주방·욕실 기본 설비 자동 배치
+            </button>
+          </section>
+
+          <section className="space-y-2">
+            <h3 className="panel-title">문 · 창호</h3>
+            <ColorRow label="문틀·샷시 색" value={fitColors.frame} onPick={(c) => setFitColors((f) => ({ ...f, frame: c }))} />
+            <ColorRow label="문짝 색" value={fitColors.leaf} onPick={(c) => setFitColors((f) => ({ ...f, leaf: c }))} />
+            <div className="grid grid-cols-2 gap-1.5">
+              <button className="btn text-xs" onClick={() => fitAll("door")}>
+                모든 문 자리에 문 달기
+              </button>
+              <button className="btn text-xs" onClick={() => fitAll("sash")}>
+                모든 창 자리에 샷시
+              </button>
+            </div>
+            <p className="text-xs text-neutral-500">현관문은 문 자리를 클릭해서 ‘현관문’으로 바꿔주세요.</p>
+          </section>
+
           <section>
             <h3 className="panel-title">컬러 조합</h3>
             <div className="grid grid-cols-1 gap-1.5">
@@ -436,6 +516,7 @@ export default function Studio() {
                 ))}
               </select>
               <p className="text-xs text-neutral-600">문 위·창 아래위만 벽으로 채웁니다. 잘못 잡힌 자리면 지우세요 (그 자리는 천장까지 뚫립니다).</p>
+              <FitEditor isWindow={selectedInfill.kind !== "door"} fit={selectedInfill.fit} defaults={fitColors} onChange={(fit) => setInfillFit(selectedInfill.id, fit)} />
               <button className="btn w-full text-red-600" onClick={deleteSelection}>
                 삭제
               </button>
@@ -443,7 +524,41 @@ export default function Studio() {
           )}
 
           {selectedOpening && (
-            <OpeningPanel opening={selectedOpening} project={project} onChange={(p) => updateOpening(selectedOpening.id, p)} onDelete={deleteSelection} />
+            <OpeningPanel opening={selectedOpening} project={project} onChange={(p) => updateOpening(selectedOpening.id, p)} onDelete={deleteSelection}>
+              {selectedOpening.kind !== "open" && (
+                <FitEditor isWindow={selectedOpening.kind === "window"} fit={selectedOpening.fit} defaults={fitColors} onChange={(fit) => updateOpening(selectedOpening.id, { fit })} />
+              )}
+            </OpeningPanel>
+          )}
+
+          {selectedItem && (
+            <section className="space-y-2 rounded-lg bg-sky-50 p-2">
+              <h3 className="panel-title">선택한 설비 · {ITEM_SPECS[selectedItem.type].label}</h3>
+              <div className="grid grid-cols-2 gap-1.5">
+                <label className="text-xs text-neutral-600">
+                  폭(mm)
+                  <input className="input w-full" type="number" value={selectedItem.w} onChange={(e) => updateItem(selectedItem.id, { w: Math.max(200, Number(e.target.value) || 0) })} />
+                </label>
+                <label className="text-xs text-neutral-600">
+                  깊이(mm)
+                  <input className="input w-full" type="number" value={selectedItem.d} onChange={(e) => updateItem(selectedItem.id, { d: Math.max(200, Number(e.target.value) || 0) })} />
+                </label>
+              </div>
+              <div className="flex gap-1.5">
+                <button className="btn flex-1" onClick={() => updateItem(selectedItem.id, { rot: (selectedItem.rot + 270) % 360 })}>
+                  ↺ 90°
+                </button>
+                <button className="btn flex-1" onClick={() => updateItem(selectedItem.id, { rot: (selectedItem.rot + 90) % 360 })}>
+                  ↻ 90°
+                </button>
+              </div>
+              {ITEM_SPECS[selectedItem.type].colorable && (
+                <ColorRow label="문짝·몸통 색" value={selectedItem.color} onPick={(c) => updateItem(selectedItem.id, { color: c })} />
+              )}
+              <button className="btn w-full text-red-600" onClick={deleteSelection}>
+                삭제
+              </button>
+            </section>
           )}
 
           <section className="space-y-2">
@@ -533,12 +648,13 @@ export default function Studio() {
                   onToolDone={() => setTool("select")}
                   onScaleMeasured={onScaleMeasured}
                   onPick={onPick}
+                  onPlace={onPlace}
                 />
               </div>
             )}
             {view !== "plan" && (
               <div className="min-w-0 flex-1">
-                <Viewer3D project={project} cutaway={cutaway} camera={camera} onSelectRoom={(id) => setSelection({ kind: "room", id })} captureRef={captureRef} />
+                <Viewer3D project={project} cutaway={cutaway} camera={camera} onSelectRoom={(id) => setSelection(id.startsWith("item-") ? { kind: "item", id: id.slice(5) } : { kind: "room", id })} captureRef={captureRef} />
               </div>
             )}
           </div>
@@ -574,7 +690,19 @@ function MaterialPicker({ label, category, value, onPick }: { label: string; cat
   );
 }
 
-function OpeningPanel({ opening, project, onChange, onDelete }: { opening: Opening; project: Project; onChange: (p: Partial<Opening>) => void; onDelete: () => void }) {
+function OpeningPanel({
+  opening,
+  project,
+  onChange,
+  onDelete,
+  children,
+}: {
+  opening: Opening;
+  project: Project;
+  onChange: (p: Partial<Opening>) => void;
+  onDelete: () => void;
+  children?: React.ReactNode;
+}) {
   const width = Math.round(Math.hypot(opening.b.x - opening.a.x, opening.b.y - opening.a.y) * project.mmPerPx);
   return (
     <section className="space-y-2 rounded-lg bg-amber-50 p-2">
@@ -602,9 +730,71 @@ function OpeningPanel({ opening, project, onChange, onDelete }: { opening: Openi
           </label>
         </div>
       )}
+      {children}
       <button className="btn w-full text-red-600" onClick={onDelete}>
         삭제
       </button>
     </section>
+  );
+}
+
+function ColorRow({ label, value, onPick }: { label: string; value: string; onPick: (hex: string) => void }) {
+  return (
+    <div>
+      <p className="mb-1 text-xs text-neutral-600">
+        {label}: <b className="text-neutral-900">{PAINT_COLORS.find((c) => c.hex === value)?.name ?? value}</b>
+      </p>
+      <div className="flex flex-wrap gap-1">
+        {PAINT_COLORS.map((c) => (
+          <button
+            key={c.hex}
+            title={c.name}
+            aria-label={c.name}
+            onClick={() => onPick(c.hex)}
+            className={`h-6 w-6 rounded ring-offset-1 ${c.hex === value ? "ring-2 ring-blue-600" : "ring-1 ring-neutral-300"}`}
+            style={{ background: c.hex }}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** 문·창 자리에 무엇을 달지 + 색 */
+function FitEditor({
+  isWindow,
+  fit,
+  defaults,
+  onChange,
+}: {
+  isWindow: boolean;
+  fit: Fit | undefined;
+  defaults: { frame: string; leaf: string };
+  onChange: (fit: Fit | undefined) => void;
+}) {
+  const types: FitType[] = isWindow ? ["sash"] : ["door", "entry"];
+  return (
+    <div className="space-y-1.5 border-t border-black/10 pt-2">
+      <div className="flex flex-wrap gap-1">
+        <button className={!fit ? "btn-primary text-xs" : "btn text-xs"} onClick={() => onChange(undefined)}>
+          비워두기
+        </button>
+        {types.map((t) => (
+          <button
+            key={t}
+            className={fit?.type === t ? "btn-primary text-xs" : "btn text-xs"}
+            onClick={() => onChange(t === "entry" ? { ...FIT_DEFAULTS.entry } : { ...FIT_DEFAULTS[t], ...defaults, type: t })}
+          >
+            {FIT_LABEL[t]}
+          </button>
+        ))}
+      </div>
+      {fit && (
+        <>
+          <ColorRow label={fit.type === "sash" ? "샷시 색" : "문틀 색"} value={fit.frame} onPick={(c) => onChange({ ...fit, frame: c })} />
+          {fit.type !== "sash" && <ColorRow label="문짝 색" value={fit.leaf} onPick={(c) => onChange({ ...fit, leaf: c })} />}
+        </>
+      )}
+    </div>
   );
 }

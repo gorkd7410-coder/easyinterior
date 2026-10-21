@@ -45,7 +45,7 @@ export const INFILL_LABEL: Record<InfillKind, string> = {
 export type TracedWalls = {
   walls: { outer: Pt[]; holes: Pt[][] }[];
   /** 벽이 비어 있는 문·창 자리. 문 위 / 창 아래·위를 벽으로 채운다 */
-  infills: { id: string; poly: Pt[]; kind: InfillKind }[];
+  infills: { id: string; poly: Pt[]; kind: InfillKind; fit?: Fit }[];
   slab: Pt[] | null;
   wallMat: string;
 };
@@ -65,6 +65,41 @@ export type Opening = {
   b: Pt;
   sill: number; // mm, 바닥에서 하단까지
   head: number; // mm, 바닥에서 상단까지
+  fit?: Fit;
+};
+
+/** 문·창 자리에 다는 것: 문짝+문틀 / 현관문 / 샷시 */
+export type FitType = "door" | "entry" | "sash";
+
+export const FIT_LABEL: Record<FitType, string> = {
+  door: "문짝 + 문틀",
+  entry: "현관문",
+  sash: "샷시",
+};
+
+export type Fit = {
+  type: FitType;
+  /** 문틀·샷시 프레임 색 (#rrggbb) */
+  frame: string;
+  /** 문짝 색 (#rrggbb). 샷시는 쓰지 않음 */
+  leaf: string;
+};
+
+/** 바닥에 놓는 설비 (주방·욕실) */
+export type ItemType = "sink" | "fridge" | "toilet" | "basin" | "bathtub" | "shower";
+
+export type Item = {
+  id: string;
+  type: ItemType;
+  /** 중심 (이미지 px) */
+  x: number;
+  y: number;
+  /** 화면 기준 시계방향 회전(도). 0이면 등이 위쪽 벽, 앞이 아래쪽 */
+  rot: number;
+  w: number; // mm 폭
+  d: number; // mm 깊이
+  /** 문짝·몸통 색 (#rrggbb) */
+  color: string;
 };
 
 export type PlanImage = {
@@ -84,6 +119,7 @@ export type Project = {
   rooms: Room[];
   openings: Opening[];
   traced?: TracedWalls | null;
+  items?: Item[];
 };
 
 /** 문·창 높이 (mm) */
