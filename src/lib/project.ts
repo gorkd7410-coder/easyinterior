@@ -4,6 +4,7 @@ import type { Project, Room } from "./types";
 /** 안목치수(벽 안쪽) 기준 면적 ㎡ */
 export function roomAreaM2(room: Room, p: Pt2Scale): number {
   if (room.points.length < 3) return 0;
+  if (room.floorOnly) return (polygonArea(room.points) * p.mmPerPx * p.mmPerPx) / 1e6;
   const inset = insetPolygon(room.points, p.wallThickness / 2 / p.mmPerPx).inset;
   return (polygonArea(inset) * p.mmPerPx * p.mmPerPx) / 1e6;
 }

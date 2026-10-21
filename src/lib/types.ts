@@ -29,6 +29,25 @@ export type Room = {
   points: Pt[]; // 벽 중심선 기준 다각형
   floorMat: string;
   wallMat: string;
+  /** 평면도에서 벽을 그대로 딴 경우: 바닥만 만들고 벽은 traced 벽을 쓴다 */
+  floorOnly?: boolean;
+};
+
+export type InfillKind = "door" | "window" | "floorWindow";
+
+export const INFILL_LABEL: Record<InfillKind, string> = {
+  door: "문 (문 위 벽)",
+  window: "창 (창 아래·위 벽)",
+  floorWindow: "바닥까지 창 (창 위 벽)",
+};
+
+/** 평면도의 검은 벽을 그대로 딴 벽 구조 (좌표는 이미지 px) */
+export type TracedWalls = {
+  walls: { outer: Pt[]; holes: Pt[][] }[];
+  /** 벽이 비어 있는 문·창 자리. 문 위 / 창 아래·위를 벽으로 채운다 */
+  infills: { id: string; poly: Pt[]; kind: InfillKind }[];
+  slab: Pt[] | null;
+  wallMat: string;
 };
 
 export type OpeningKind = "door" | "window" | "open";
@@ -64,7 +83,11 @@ export type Project = {
   wallThickness: number; // mm (방 사이 벽 전체 두께)
   rooms: Room[];
   openings: Opening[];
+  traced?: TracedWalls | null;
 };
+
+/** 문·창 높이 (mm) */
+export const INFILL_HEIGHTS = { head: 2100, sill: 900 };
 
 export const OPENING_DEFAULTS: Record<OpeningKind, { sill: number; head: number }> = {
   door: { sill: 0, head: 2100 },

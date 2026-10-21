@@ -1,6 +1,7 @@
 "use client";
 
 import { detectRooms, type DetectResult } from "./detect";
+import { traceWalls, type TracedPlan } from "./traceWalls";
 
 // 평면도 이미지(dataURL) → 픽셀 → 방 인식. 같은 이미지·강도는 다시 계산하지 않는다.
 
@@ -33,4 +34,17 @@ export async function detectFromDataUrl(dataUrl: string, gapStrength: number): P
   cacheKey = key;
   cacheResult = result;
   return result;
+}
+
+let pixelKey = "";
+let pixelCache: ImageData | null = null;
+
+export async function traceFromDataUrl(dataUrl: string, gapStrength: number): Promise<TracedPlan> {
+  const key = `${dataUrl.length}:${dataUrl.slice(-64)}`;
+  if (key !== pixelKey || !pixelCache) {
+    pixelCache = await loadPixels(dataUrl);
+    pixelKey = key;
+  }
+  await new Promise((r) => setTimeout(r, 0));
+  return traceWalls(pixelCache, { gapStrength });
 }

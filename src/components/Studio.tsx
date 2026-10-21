@@ -2,15 +2,15 @@
 
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { detectFromDataUrl } from "@/lib/detectImage";
+import { detectFromDataUrl, traceFromDataUrl } from "@/lib/detectImage";
 import { downloadBlob, exportSketchupZip, stamp } from "@/lib/exportSketchup";
 import { pointInPolygon, polygonArea, uid } from "@/lib/geometry";
 import { MATERIALS, PRESETS, finishFor, getMaterial, type Material } from "@/lib/materials";
 import { fitScaleToArea, loadSaved, roomAreaM2, save, totalAreaM2 } from "@/lib/project";
 import { TEMPLATES, emptyProject, projectFromTemplate } from "@/lib/templates";
 import { textureDataUrl } from "@/lib/textures";
-import type { Opening, OpeningKind, Project, Pt, Room, RoomType } from "@/lib/types";
-import { OPENING_DEFAULTS, OPENING_LABEL, ROOM_TYPE_LABEL } from "@/lib/types";
+import type { InfillKind, Opening, OpeningKind, Project, Pt, Room, RoomType, TracedWalls } from "@/lib/types";
+import { INFILL_LABEL, OPENING_DEFAULTS, OPENING_LABEL, ROOM_TYPE_LABEL } from "@/lib/types";
 import DraftPanel from "./DraftPanel";
 import PlanEditor, { type Selection, type Tool } from "./PlanEditor";
 import type { CameraRequest } from "./Viewer3D";
@@ -72,9 +72,12 @@ export default function Studio() {
     update({ ...project, rooms: project.rooms.map((r) => (r.id === id ? { ...r, ...p } : r)) });
   const updateOpening = (id: string, p: Partial<Opening>) =>
     update({ ...project, openings: project.openings.map((o) => (o.id === id ? { ...o, ...p } : o)) });
+  const selectedInfill = selection?.kind === "infill" ? project.traced?.infills.find((f) => f.id === selection.id) : undefined;
+  const updateTraced = (p: Partial<TracedWalls>) => project.traced && update({ ...project, traced: { ...project.traced, ...p } });
   const deleteSelection = () => {
     if (!selection) return;
     if (selection.kind === "room") update({ ...project, rooms: project.rooms.filter((r) => r.id !== selection.id) });
+    else if (selection.kind === "infill") updateTraced({ infills: project.traced!.infills.filter((f) => f.id !== selection.id) });
     else update({ ...project, openings: project.openings.filter((o) => o.id !== selection.id) });
     setSelection(null);
   };
@@ -138,6 +141,45 @@ export default function Studio() {
     return { id: uid(), name, type, points, floorMat: f.floor, wallMat: f.wall };
   };
 
+  /** 평면도의 검은 벽을 그대로 따서 3D로 세우고, 벽으로 둘러싸인 공간은 방 바닥으로 */
+  const traceAll = async () => {
+    if (!project.image) return;
+    if ((project.rooms.length || project.traced) && !window.confirm("지금 도면을 지우고 평면도에서 벽을 새로 딸까요?")) return;
+    setDetecting(true);
+    setDetectMsg("");
+    try {
+      const res = await traceFromDataUrl(project.image.dataUrl, gapStrength);
+      const mmPerPx = scaleUntouched(project) ? res.mmPerPxGuess : project.mmPerPx;
+      const sorted = [...res.regions].sort((a, b) => polygonArea(b) - polygonArea(a));
+      let n = 0;
+      let m = 0;
+      const rooms = sorted.map((pts, i) => {
+        const m2 = (polygonArea(pts) * mmPerPx * mmPerPx) / 1e6;
+        const room = i === 0 ? makeRoom(pts, "거실", "living") : m2 >= 6.5 ? makeRoom(pts, `방${++n}`, "bedroom") : makeRoom(pts, `공간${++m}`, "etc");
+        return { ...room, floorOnly: true };
+      });
+      const traced: TracedWalls = {
+        walls: res.walls,
+        infills: res.infills.map((f) => ({ id: uid(), poly: f.poly, kind: f.kind === "door" ? "door" : f.floorLevel ? "floorWindow" : "window" })),
+        slab: res.slab,
+        wallMat: project.traced?.wallMat ?? "wall_silk_white",
+      };
+      update({ ...project, rooms, openings: [], traced, mmPerPx });
+      setSelection(null);
+      setTool("select");
+      setCamera((c) => ({ mode: "overview", nonce: c.nonce + 1 }));
+      setDetectMsg(
+        res.walls.length
+          ? `벽 ${res.walls.length}덩어리, 문·창 ${traced.infills.length}곳, 방 ${rooms.length}개를 땄습니다. 전용면적을 입력해 축척을 맞추고, 틀린 문·창은 클릭해서 고치거나 지우세요.`
+          : "벽을 찾지 못했습니다. 벽이 검게 그려진 평면도인지 확인해주세요.",
+      );
+    } catch (e) {
+      setDetectMsg(`인식 실패: ${(e as Error).message}`);
+    } finally {
+      setDetecting(false);
+    }
+  };
+
   const detectAll = async () => {
     if (!project.image) return;
     if (project.rooms.length && !window.confirm("그려둔 방을 지우고 자동 인식 결과로 바꿀까요?")) return;
@@ -156,7 +198,7 @@ export default function Studio() {
         if (m2 >= 6.5) return makeRoom(pts, `방${++n}`, "bedroom");
         return makeRoom(pts, `공간${++m}`, "etc");
       });
-      update({ ...project, rooms, openings: [], mmPerPx });
+      update({ ...project, rooms, openings: [], traced: null, mmPerPx });
       setSelection(null);
       setTool("select");
       setCamera((c) => ({ mode: "overview", nonce: c.nonce + 1 }));
@@ -214,6 +256,7 @@ export default function Studio() {
     update({
       ...project,
       rooms: project.rooms.map((r) => ({ ...r, floorMat: preset.byType[r.type].floor, wallMat: preset.byType[r.type].wall })),
+      traced: project.traced ? { ...project.traced, wallMat: preset.byType.living.wall } : project.traced,
     });
   };
 
@@ -306,8 +349,11 @@ export default function Studio() {
           {project.image && (
             <section className="space-y-2 rounded-lg bg-emerald-50 p-2">
               <h3 className="panel-title">평면도 자동 인식</h3>
-              <button className="btn-primary w-full" onClick={detectAll} disabled={detecting}>
-                {detecting ? "인식 중…" : "벽 자동 인식 (전체)"}
+              <button className="btn-primary w-full !py-2" onClick={traceAll} disabled={detecting}>
+                {detecting ? "인식 중…" : "벽 그대로 3D로 만들기"}
+              </button>
+              <button className="btn w-full" onClick={detectAll} disabled={detecting}>
+                방 단위로 인식 (직각 도면용)
               </button>
               <button className={tool === "pick" ? "btn-primary w-full" : "btn w-full"} onClick={() => setTool("pick")} disabled={detecting}>
                 방 클릭 인식 (한 칸씩)
@@ -317,6 +363,14 @@ export default function Studio() {
                 <input className="w-full" type="range" min={0.4} max={2} step={0.1} value={gapStrength} onChange={(e) => setGapStrength(Number(e.target.value))} />
               </label>
               {detectMsg && <p className="text-xs text-emerald-900">{detectMsg}</p>}
+              {project.traced && (
+                <div className="space-y-1.5 border-t border-emerald-200 pt-2">
+                  <MaterialPicker label="벽 마감" category="wall" value={project.traced.wallMat} onPick={(id) => updateTraced({ wallMat: id })} />
+                  <button className="btn w-full text-red-600" onClick={() => update({ ...project, traced: null })}>
+                    딴 벽 지우기
+                  </button>
+                </div>
+              )}
             </section>
           )}
           <section>
@@ -362,6 +416,29 @@ export default function Studio() {
                   삭제
                 </button>
               </div>
+            </section>
+          )}
+
+          {selectedInfill && (
+            <section className="space-y-2 rounded-lg bg-fuchsia-50 p-2">
+              <h3 className="panel-title">선택한 문·창 자리</h3>
+              <select
+                className="input w-full"
+                value={selectedInfill.kind}
+                onChange={(e) =>
+                  updateTraced({ infills: project.traced!.infills.map((f) => (f.id === selectedInfill.id ? { ...f, kind: e.target.value as InfillKind } : f)) })
+                }
+              >
+                {Object.entries(INFILL_LABEL).map(([k, v]) => (
+                  <option key={k} value={k}>
+                    {v}
+                  </option>
+                ))}
+              </select>
+              <p className="text-xs text-neutral-600">문 위·창 아래위만 벽으로 채웁니다. 잘못 잡힌 자리면 지우세요 (그 자리는 천장까지 뚫립니다).</p>
+              <button className="btn w-full text-red-600" onClick={deleteSelection}>
+                삭제
+              </button>
             </section>
           )}
 

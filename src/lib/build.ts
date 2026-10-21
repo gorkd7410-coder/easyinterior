@@ -2,6 +2,7 @@ import { ShapeUtils, Vector2 } from "three";
 import { dist, insetPolygon, signedArea } from "./geometry";
 import { getMaterial } from "./materials";
 import type { Opening, Project, Pt, Room } from "./types";
+import { INFILL_HEIGHTS } from "./types";
 
 // 프로젝트 → 3D 메쉬 데이터.
 // 모델 좌표계: mm, Z-up (스케치업/Collada 기준). X = 평면 x, Y = -평면 y, Z = 높이.
@@ -99,7 +100,8 @@ export function buildRoomMesh(room: Room, project: Project): RoomMesh {
   }
 
   // 바닥: 벽 안쪽 면 기준
-  const insetPx = insetPolygon(pts, half / mmPerPx).inset;
+  // 벽을 그대로 딴 방은 다각형이 이미 벽 안쪽 면이다
+  const insetPx = room.floorOnly ? pts : insetPolygon(pts, half / mmPerPx).inset;
   const floor2d = insetPx.map((p) => new Vector2(...P(p)));
   const tris = ShapeUtils.triangulateShape(floor2d, []);
   for (const [i, j, k] of tris) {
@@ -117,6 +119,7 @@ export function buildRoomMesh(room: Room, project: Project): RoomMesh {
   }
 
   // 벽: 방마다 중심선에서 안쪽으로 반 두께씩. 인접한 방의 벽과 등을 맞대 전체 두께가 된다.
+  if (room.floorOnly) return { roomId: room.id, name: room.name, parts: [...pb.parts.values()] };
   const n = pts.length;
   let uOffset = 0; // 벽지 무늬가 모서리를 따라 이어지도록
   for (let i = 0; i < n; i++) {
@@ -194,6 +197,83 @@ export function buildRoomMesh(room: Room, project: Project): RoomMesh {
   return { roomId: room.id, name: room.name, parts: [...pb.parts.values()] };
 }
 
+/** 다각형(구멍 포함)을 z0~z1로 세운 기둥. 옆면은 sideMat, 윗/아랫면은 capMat */
+function extrude(
+  pb: PartBuilder,
+  outer: [number, number][],
+  holes: [number, number][][],
+  z0: number,
+  z1: number,
+  sideMat: string,
+  capMat: string,
+  bottom: boolean,
+) {
+  const side = getMaterial(sideMat);
+  // 바깥 고리는 반시계(양의 면적), 구멍은 시계 방향으로 맞춘 뒤 각 변의 오른쪽이 벽 바깥
+  const area = (r: [number, number][]) => r.reduce((s, p, i) => s + p[0] * r[(i + 1) % r.length][1] - r[(i + 1) % r.length][0] * p[1], 0);
+  const o = area(outer) > 0 ? outer : [...outer].reverse();
+  const hs = holes.map((h) => (area(h) < 0 ? h : [...h].reverse()));
+  for (const ring of [o, ...hs]) {
+    let u = 0;
+    for (let i = 0; i < ring.length; i++) {
+      const a = ring[i];
+      const b = ring[(i + 1) % ring.length];
+      const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      if (len < 0.5) continue;
+      const n: V3 = [(b[1] - a[1]) / len, -(b[0] - a[0]) / len, 0];
+      const u0 = u / side.tileW;
+      const u1 = (u + len) / side.tileW;
+      pb.quad(
+        sideMat,
+        [[a[0], a[1], z0], [b[0], b[1], z0], [b[0], b[1], z1], [a[0], a[1], z1]],
+        [[u0, z0 / side.tileH], [u1, z0 / side.tileH], [u1, z1 / side.tileH], [u0, z1 / side.tileH]],
+        n,
+      );
+      u += len;
+    }
+  }
+  const tris = ShapeUtils.triangulateShape(o.map((p) => new Vector2(...p)), hs.map((h) => h.map((p) => new Vector2(...p))));
+  const all = [...o, ...hs.flat()];
+  const zero: [number, number] = [0, 0];
+  for (const [i, j, k] of tris) {
+    const [a, b, c] = [all[i], all[j], all[k]];
+    pb.tri(capMat, [a[0], a[1], z1], [b[0], b[1], z1], [c[0], c[1], z1], zero, zero, zero, [0, 0, 1]);
+    if (bottom) pb.tri(capMat, [a[0], a[1], z0], [b[0], b[1], z0], [c[0], c[1], z0], zero, zero, zero, [0, 0, -1]);
+  }
+}
+
+/** 평면도에서 딴 벽 구조 → 벽체 / 문·창 위아래 / 바닥 슬래브 */
+export function buildTraced(project: Project): RoomMesh[] {
+  const tr = project.traced;
+  if (!tr) return [];
+  const { mmPerPx, wallHeight: H } = project;
+  const P = (pts: Pt[]) => pts.map((p) => [p.x * mmPerPx, -p.y * mmPerPx] as [number, number]);
+  const head = Math.min(INFILL_HEIGHTS.head, H);
+  const sill = Math.min(INFILL_HEIGHTS.sill, head);
+
+  const walls = new PartBuilder();
+  for (const w of tr.walls) {
+    if (w.outer.length >= 3) extrude(walls, P(w.outer), w.holes.filter((h) => h.length >= 3).map(P), 0, H, tr.wallMat, "core", false);
+  }
+  const infill = new PartBuilder();
+  for (const f of tr.infills) {
+    if (f.poly.length < 3) continue;
+    const poly = P(f.poly);
+    if (head < H) extrude(infill, poly, [], head, H, tr.wallMat, "core", true);
+    if (f.kind === "window" && sill > 0) extrude(infill, poly, [], 0, sill, tr.wallMat, "core", false);
+  }
+  const slab = new PartBuilder();
+  if (tr.slab && tr.slab.length >= 3) {
+    // 방 바닥 사이 문지방 같은 빈틈을 메우는 얇은 바닥 (방 바닥보다 살짝 아래)
+    extrude(slab, P(tr.slab), [], -30, -5, "core", "core", false);
+  }
+  return [
+    { roomId: "traced-walls", name: "벽체", parts: [...walls.parts.values()] },
+    { roomId: "traced-infills", name: "문·창 위아래 벽", parts: [...infill.parts.values()] },
+    { roomId: "traced-slab", name: "바닥 슬래브", parts: [...slab.parts.values()] },
+  ].filter((m) => m.parts.length);
+}
+
 export function buildProject(project: Project): RoomMesh[] {
-  return project.rooms.map((r) => buildRoomMesh(r, project));
+  return [...project.rooms.map((r) => buildRoomMesh(r, project)), ...buildTraced(project)];
 }

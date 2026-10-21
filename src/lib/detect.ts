@@ -24,7 +24,7 @@ export type DetectResult = {
   roomAt: (p: Pt) => number;
 };
 
-type Gray = { data: Uint8ClampedArray; width: number; height: number };
+export type Gray = { data: Uint8ClampedArray; width: number; height: number };
 
 const MAX_DIM = 1400;
 
@@ -115,7 +115,7 @@ export function detectRooms(img: Gray, opts: DetectOptions): DetectResult {
 
 // ---------- 픽셀 처리 ----------
 
-function resizeLum(img: Gray, W: number, H: number): Uint8Array {
+export function resizeLum(img: Gray, W: number, H: number): Uint8Array {
   const out = new Uint8Array(W * H);
   const sx = img.width / W;
   const sy = img.height / H;
@@ -141,7 +141,7 @@ function resizeLum(img: Gray, W: number, H: number): Uint8Array {
   return out;
 }
 
-function otsu(lum: Uint8Array): number {
+export function otsu(lum: Uint8Array): number {
   const hist = new Float64Array(256);
   for (const v of lum) hist[v]++;
   const total = lum.length;
@@ -169,7 +169,7 @@ function otsu(lum: Uint8Array): number {
 }
 
 /** 어두운 픽셀의 가로/세로 연속 길이 최빈값 = 벽 두께 */
-function estimateWallThickness(dark: Uint8Array, W: number, H: number): number {
+export function estimateWallThickness(dark: Uint8Array, W: number, H: number): number {
   const maxLen = Math.max(8, Math.min(80, Math.round(Math.max(W, H) / 12)));
   const hist = new Float64Array(maxLen + 1);
   const add = (len: number) => {
@@ -210,7 +210,7 @@ function estimateWallThickness(dark: Uint8Array, W: number, H: number): number {
   return best;
 }
 
-function dilate(mask: Uint8Array, W: number, H: number, r: number): Uint8Array {
+export function dilate(mask: Uint8Array, W: number, H: number, r: number): Uint8Array {
   const inv = new Uint8Array(mask.length);
   for (let i = 0; i < mask.length; i++) inv[i] = mask[i] ? 0 : 1;
   const e = erode(inv, W, H, r);
@@ -251,7 +251,7 @@ function insideMask(wall: Uint8Array, W: number, H: number): Uint8Array {
 }
 
 /** 벽을 크게 닫아(close) 창 틈까지 메운 뒤, 테두리에서 닿지 않는 부분 = 건물 윤곽 */
-function footprintMask(wall: Uint8Array, W: number, H: number, rc: number): Uint8Array {
+export function footprintMask(wall: Uint8Array, W: number, H: number, rc: number): Uint8Array {
   // 이미지 밖을 빈 공간으로 두고 닫기 위해 여백을 붙여 계산
   const p = rc + 2;
   const PW = W + 2 * p;
@@ -280,7 +280,7 @@ function range(start: number, end: number, step: number): number[] {
 }
 
 /** 정사각 커널 침식 (가로·세로 분리, 창 안의 0 개수로 O(n)) */
-function erode(mask: Uint8Array, W: number, H: number, r: number): Uint8Array {
+export function erode(mask: Uint8Array, W: number, H: number, r: number): Uint8Array {
   const tmp = new Uint8Array(W * H);
   const out = new Uint8Array(W * H);
   for (let y = 0; y < H; y++) {
@@ -310,7 +310,7 @@ function erode(mask: Uint8Array, W: number, H: number, r: number): Uint8Array {
   return out;
 }
 
-function removeSmallBlobs(mask: Uint8Array, W: number, H: number, maxSide: number) {
+export function removeSmallBlobs(mask: Uint8Array, W: number, H: number, maxSide: number) {
   const lab = label(mask, W, H);
   const minX = new Int32Array(lab.count + 1).fill(W);
   const minY = new Int32Array(lab.count + 1).fill(H);
@@ -332,7 +332,7 @@ function removeSmallBlobs(mask: Uint8Array, W: number, H: number, maxSide: numbe
   }
 }
 
-function label(mask: Uint8Array, W: number, H: number): { map: Int32Array; count: number } {
+export function label(mask: Uint8Array, W: number, H: number): { map: Int32Array; count: number } {
   const map = new Int32Array(W * H);
   const stack = new Int32Array(W * H);
   let count = 0;
@@ -358,7 +358,7 @@ function label(mask: Uint8Array, W: number, H: number): { map: Int32Array; count
   return { map, count };
 }
 
-function borderLabels(lab: { map: Int32Array }, W: number, H: number): Set<number> {
+export function borderLabels(lab: { map: Int32Array }, W: number, H: number): Set<number> {
   const s = new Set<number>();
   for (let x = 0; x < W; x++) {
     if (lab.map[x]) s.add(lab.map[x]);
@@ -402,7 +402,7 @@ function grow(seeds: Int32Array, free: Uint8Array, W: number, H: number): Int32A
 // ---------- 외곽선 ----------
 
 /** 라벨 영역의 바깥 외곽선 (픽셀 모서리 좌표, 꺾이는 점만) */
-function traceOuter(lab: Int32Array, W: number, H: number, id: number): Pt[] | null {
+export function traceOuter(lab: Int32Array, W: number, H: number, id: number): Pt[] | null {
   const inside = (x: number, y: number) => x >= 0 && y >= 0 && x < W && y < H && lab[y * W + x] === id;
   let sx = -1;
   let sy = -1;
@@ -458,7 +458,7 @@ function traceOuter(lab: Int32Array, W: number, H: number, id: number): Pt[] | n
   return pts.length >= 4 ? pts : null;
 }
 
-function simplifyClosed(pts: Pt[], eps: number): Pt[] {
+export function simplifyClosed(pts: Pt[], eps: number): Pt[] {
   if (pts.length < 4) return pts;
   // 시작점에서 가장 먼 점으로 둘로 나눠 각각 더글라스-포이커
   let far = 0;
@@ -494,7 +494,7 @@ function dp(pts: Pt[], eps: number): Pt[] {
 }
 
 /** 수평/수직에 가까운 변을 축에 맞추고, 연속한 축 변의 교점을 꼭짓점으로 */
-function orthogonalize(pts: Pt[]): Pt[] {
+export function orthogonalize(pts: Pt[], tolDeg = 15): Pt[] {
   const n = pts.length;
   type E = { kind: "h" | "v" | "d"; val: number };
   const edges: E[] = [];
@@ -502,8 +502,8 @@ function orthogonalize(pts: Pt[]): Pt[] {
     const a = pts[i];
     const b = pts[(i + 1) % n];
     const ang = (Math.atan2(Math.abs(b.y - a.y), Math.abs(b.x - a.x)) * 180) / Math.PI;
-    if (ang < 15) edges.push({ kind: "h", val: (a.y + b.y) / 2 });
-    else if (ang > 75) edges.push({ kind: "v", val: (a.x + b.x) / 2 });
+    if (ang < tolDeg) edges.push({ kind: "h", val: (a.y + b.y) / 2 });
+    else if (ang > 90 - tolDeg) edges.push({ kind: "v", val: (a.x + b.x) / 2 });
     else edges.push({ kind: "d", val: 0 });
   }
   const out: Pt[] = [];
@@ -531,7 +531,7 @@ function orthogonalize(pts: Pt[]): Pt[] {
 }
 
 /** 중복점·일직선 위의 점 제거 */
-function cleanup(pts: Pt[]): Pt[] {
+export function cleanup(pts: Pt[]): Pt[] {
   let p = pts.filter((q, i) => {
     const r = pts[(i + 1) % pts.length];
     return Math.hypot(q.x - r.x, q.y - r.y) > 0.5;

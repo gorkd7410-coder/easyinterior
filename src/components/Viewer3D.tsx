@@ -150,7 +150,8 @@ export default function Viewer3D({ project, cutaway, camera, onSelectRoom, captu
           key={r.roomId}
           onClick={(e) => {
             e.stopPropagation();
-            onSelectRoom(r.roomId);
+            // 평면도에서 딴 벽·슬래브는 방이 아니므로 선택하지 않는다
+            if (!r.roomId.startsWith("traced-")) onSelectRoom(r.roomId);
           }}
         >
           {r.parts.map((p) => (
